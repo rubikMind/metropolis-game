@@ -1,26 +1,21 @@
 #Metropolis deck builder city builder by Lucas
 
 #TODO:
-#left off at line 466
-#change function and method names to have underscores
-#change decodeCoordinates() to take in Game to also filter out incorrect positions
-#make more game mechanics to test interactions between buildings
+#left off at line 5
+#change all occurances of decodeCoords(string) to newDecodeCoords(string, Game)
+#add command test, similar to dist but only points at dissatisfied houses, doesnt show board if all satisfied
+#debug commands for directly changing the board or your deck
 #make SimpleResource, SimpleAction, and SimpleEvent classes that simple game classes can inherit from such as: place Building or Resource
 #most of Game.nextRound()
+#make upgrades system and decay system
 
 #future game content plans:
     #more Houses:
-        #corner: path can be any length but must have 3 or less corners.
         #mansion: no Resource, must have visibility from itself to at least 8 tiles in cardinal directions.
         #squirrel: same as Groceries but Resource does not block path. (yes the squirrel also lives in a House)
         #friend: no Resource, must be within 6 tiles of 2 other friends. (cannot use Game.distanceCache)
-    #markers:
-        #in the empty space horizontally between tiles Game.showBoard() can show extra information depending on the situation.
-        #the player can flag/unflag tiles wich will highlight the tiles every Game.showBoard() if not overwritten by anything else.
-        #the player can highlight a tile and its row and column to view its location.
-            #some game events could also use this.
-        #the player can test to highlight any Houses that are not satisfied.
-        #the player can test to see the distances on every tile of a certain Resource.
+        #euclidean: must be within radius 4 of any Resource in a straight euclidean distance, ignores path blockers.
+        #rock: Event, no Resource, does nothing, is always satisfied, just blocks placement.
     #upgrade system:
         #some rounds you are presented with 3 choices, you can pick any of the choices at any time during the round with a command.
         #these choices are often extra Resources or other things to add to your deck that will help you.
@@ -34,17 +29,24 @@
         #the options can change depending on how far you are or if any House is almost unsatisfied.
     #overall game balance:
         #Events that place Houses should be changed such that each tile is given a weighted chance,
-            #this chance should be 0 if it would be unsatisfied if another unsatisfied House already exists,
-            #be high if it would be barely satisfied, and low (but not 0) if it would be very satisfied.
+            #this chance should be lowered the more satisfied the House would be if placed there,
+            #this chance should be increased on tiles with many neighbouring Buildings of any kind.
         #in rounds that you are not given options you are given packs instead:
             #this will sometimes be a mechanic, including House and its relative Resource as an Event, Action pair added to your deck.
             #it can also be a mechanic already in your deck, in wich case will get no Resource or 2 Events.
         #decay keeps the board from going stale in many ways and allow advanced strategy for more experienced players:
-            #Houses can depart naturally if it has existed for long enough wich will not reduce lives. this can be excellerated each turn if it is barely satisfied.
-            #Actions can degrade if it is used too often and only have a chance to succeed, and eventually even break completely.
+            #Houses can depart naturally if it has existed for long enough wich will not reduce lives.
+                #this can be excellerated each turn if it is barely satisfied.
+            #Actions will degrade slowly, reducing chance to succeed, and eventually break completely.
+                #Actions will degrade each turn, this amount is randomly decided upon __init__().
+                #Actions will keep track of how many turns it was used in a row, degrading upon use depending on streak.
+                #upon __init__() a random threshhold between 50% and 100% is decided for how degraded the Action must be before having a chance to fail.
+                #upon 100% degraded the Action is removed from your deck, fresh Actions are easy to add back cuz less Actions gives a higher chance to appear in upgrades.
             #Resources should also have some mechanic to dissapear eventually but i have not decided on its cause yet.
+                #maybe if a Resource provides for no House, it dissapears at round end.
+                #maybe on turn 5 you get an Event that removes a random Resource each turn.
             #(bad) Events in your deck should eventually duplicate if youve had them for a while. (without giving you more Resources)
-            #maybe allow some Houses to pathfind outside the board.
+        #maybe allow some Houses to pathfind outside the board.
     #allow saving and loading, storing multiple Game objects in a seperate save file.
 
 
@@ -108,7 +110,29 @@ def decodeCoords(string: str):
         return (0, 0, False)
     return (int(changeBase(chars, 'zabcdefghijklmnopqrstuvwxy', '0123456789')), int(nums), True)
 
-
+def newDecodeCoords(string, game):
+    '''turns input text into x, y coordinates,
+    also returns error message if and what went wrong.
+    '''
+    chars = ''
+    nums = ''
+    for c in string:
+        if c in 'zabcdefghijklmnopqrstuvwxy':
+            chars += c
+            continue
+        if c in '0123456789':
+            nums += c
+            continue
+        return (0, 0, 'please only enter letters and numbers as a coordinate.')
+    if '' in (chars, nums):
+        return (0, 0, 'coordinates not recognised, please enter coords such as: e11, 4h.')
+    if len(chars) > 5 or len(nums) > 5:
+        return (0, 0, 'coordinates too big to convert.')
+    x = int(changeBase(chars, 'zabcdefghijklmnopqrstuvwxy', '0123456789')) -1
+    y = int(nums) -1
+    if not(0 <= x < game.sizeX and 0 <= y < game.sizeY):
+        return (x, y, 'coordinates are outside of board.')
+    return (x, y, '')
 
 def newGame():
     print('starting new game.')
@@ -138,6 +162,8 @@ class Game:
         self.sizeY = sizeY
         self.board = [[None for x in range(self.sizeX)] for y in range(self.sizeY)]
         self.deck = [GroceriesEvent(self), GroceriesAction(self), StreetAction(self)]
+        self.deck.append(CornerEvent(self))
+        self.deck.append(CornerAction(self))
         self.distanceCache = {}
         self.actionsRemaining = []
         self.flags = [' ' *self.sizeX for y in range(self.sizeY)]
@@ -211,6 +237,7 @@ class Game:
                 self.board[y][x] = None
                 self.lives -= 1
                 print('lives remaining: ' +str(self.lives))
+                self.marks[y] = self.marks[y][:x] +'>' +self.marks[y][x +1:]
 
     def nextRound(self):
         #TODO maybe check if has actions or options remaining
@@ -240,8 +267,15 @@ class Game:
         if inp[0] in ('end', 'endturn', 'next'):
             self.nextRound()
             return
-        if inp[0] in ('point', 'coord'):
-            #TODO also trigger if inputting a valid coordinate
+        x, y, error = newDecodeCoords(inp[0], self)
+        if not error:  #point at coord
+            self.marks[y] = '-' *self.sizeX
+            for row in range(self.sizeY):
+                self.marks[row] = self.marks[row][:x] +'|' +self.marks[row][x +1:]
+            self.marks[y] = self.marks[y][:x] +'>' +self.marks[y][x +1:]
+            self.showBoard()
+            return
+        if inp[0] in ('point', 'coord') or not error:  #point at coord verbose
             if len(inp) < 2:
                 print('enter coordinate you want to point at.')
                 return
@@ -271,7 +305,7 @@ class Game:
                 return
             x -= 1  #offset cuz board pos 0,0 is labled as 1,1
             y -= 1
-            if not(0 <= x < self.sizeX and 0 <= y < self.sizeY):
+            if not(0 <= x < self.sizeqX and 0 <= y < self.sizeY):
                 print('coordinates are outside of board.')
                 return
             if len(inp) > 2:
@@ -444,54 +478,54 @@ class CornerHouse(Building):
     def generateDistanceBoard(self):
         bx = self.game.sizeX
         by = self.game.sizeY
-        Hdists = [[9 for x in range(bx)] for y in range(by)]
-        Vdists = [[9 for x in range(bx)] for y in range(by)]
+        dists = [[9 for x in range(bx)] for y in range(by)]
         active = []
 
         #look for wanted Resources
         for y in range(by):
             for x in range(bx):
                 if isinstance(self.game.board[y][x], self.resource):
-                    Hdists[y][x] = 0
-                    Vdists[y][x] = 0
+                    dists[y][x] = 0
                     active.append((x, y))
         
         index = 0
         while index < len(active):
             x, y = active[index]
-            pathDist = min(Hdists[y][x], Vdists[y][x]) +1
+            pathDist = dists[y][x] +1
+
+            #walk in each direction
             for rx, ry in ((0, -1), (1, 0), (0, 1), (-1, 0)):
                 dx = 0
                 dy = 0
-                current = Hdists if rx != 0 else Vdists
                 while True:
                     dx += rx
                     dy += ry
-
-                    #distance to adjacent tile
                     if not(0 <= x +dx < bx and 0 <= y +dy < by):
-                        continue
-                    if dists[y +dy][x +dx] <= pathDist:
-                        continue
+                        break
+                    if pathDist > dists[y +dy][x +dx]:
+                        break
                     dists[y +dy][x +dx] = pathDist
-
-                    #also check adjacent tile if not blocking path
                     if (x +dx, y +dy) in active[index:]:
                         continue
                     if not self.game.board[y +dy][x +dx]:
                         active.append((x +dx, y +dy))
                         continue
                     if self.game.board[y +dy][x +dx].blocksPath:
-                        continue
+                        break
                     active.append((x +dx, y +dy))
-
+            
             index += 1
         return dists
 
     def checkSatisfaction(self) -> int:
         if self.short not in self.game.distanceCache:
             self.game.distanceCache[self.short] = self.generateDistanceBoard()
-        return 6 -self.game.distanceCache[self.short][self.posY][self.posX]
+        return 3 -self.game.distanceCache[self.short][self.posY][self.posX]
+
+class CornerResource(Building):
+    def __init__(self, game, posX, posY):
+        super().__init__(game, posX, posY)
+        self.short = 'C'
 
 
 
@@ -508,6 +542,7 @@ class Playable:
             x = random.randrange(0, self.game.sizeX)
             y = random.randrange(0, self.game.sizeY)
             if self.game.replace(x, y, self.placeResult(self.game, x, y), (None, )):
+                self.game.marks[y] = self.game.marks[y][:x] +'>' +self.game.marks[y][x +1:]
                 return
         print(self.short +' could not find an empty property and decided not to move in.')
     
@@ -548,6 +583,19 @@ class StreetAction(Playable):
         super().__init__(game)
         self.placeResult = StreetBuilding
         self.short = '_'
+
+class CornerEvent(Playable):
+    def __init__(self, game):
+        super().__init__(game)
+        self.placeResult = CornerHouse
+        self.short = 'c'
+        self.automatic = True
+
+class CornerAction(Playable):
+    def __init__(self, game):
+        super().__init__(game)
+        self.placeResult = CornerResource
+        self.short = 'C'
 
 
 
