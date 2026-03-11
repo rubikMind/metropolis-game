@@ -1,13 +1,16 @@
 #Metropolis deck builder city builder by Lucas
 
 #TODO:
-#left off at line 5
+#left off at 
+#rename options to upgrades
 #change all occurances of decodeCoords(string) to newDecodeCoords(string, Game)
+#when multiple houses are unsatisfied at end turn, only show lives remaining once after showing unsatisfied messages
 #add command test, similar to dist but only points at dissatisfied houses, doesnt show board if all satisfied
+#when showing deck or remaining actions show sorted
 #debug commands for directly changing the board or your deck
 #make SimpleResource, SimpleAction, and SimpleEvent classes that simple game classes can inherit from such as: place Building or Resource
-#most of Game.nextRound()
 #make upgrades system and decay system
+#most of Game.nextRound()
 
 #future game content plans:
     #more Houses:
@@ -54,6 +57,7 @@
 def main():
     #REPLACE comment out tests when exporting
     # print(int('hi'))
+    # print(max([n for n in range(5), 7, -3]))
 
     game = newGame()
     game.nextRound()
@@ -141,6 +145,7 @@ def newGame():
     return game
 
 def getBoardSize():
+    return (25, 15)  #REPLACE remove this and allow custom board sizes
     while True:
         s = input('enter map size: ')
         #TODO allow entering custom size as two numbers or a coordinate
@@ -162,12 +167,26 @@ class Game:
         self.sizeY = sizeY
         self.board = [[None for x in range(self.sizeX)] for y in range(self.sizeY)]
         self.deck = [GroceriesEvent(self), GroceriesAction(self), StreetAction(self)]
-        self.deck.append(CornerEvent(self))
-        self.deck.append(CornerAction(self))
+        # self.deck.append(CornerEvent(self))  #TEMP
+        # self.deck.append(CornerAction(self))  #TEMP
+        # self.deck.append(MansionEvent(self))  #TEMP
         self.distanceCache = {}
         self.actionsRemaining = []
         self.flags = [' ' *self.sizeX for y in range(self.sizeY)]
         self.marks = [' ' *self.sizeX for y in range(self.sizeY)]
+        self.packs = []
+        self.installPacks([[GroceriesEvent, GroceriesAction], [CornerEvent, CornerAction], [MansionEvent]])  #TODO add more packs
+        self.options = [Option(self), StreetOption(self), Option(self), GroceriesOption(self)]  #TEMP change back to [] after testing
+
+    def installPacks(self, packs):
+        for pack in packs:
+            #weight is the base likeliness of each pack and is decided upon starting new game
+            #avoid is the weight multiplier depending on how recently it was chosen
+            self.packs.append({'content': pack, 'weight': 1, 'avoid': 0})
+        #REPLACE maybe change bias curve
+        amount = len(self.packs)
+        for n in range(len(self.packs)):
+            self.packs[n]['weight'] = 1 -n /amount
 
     def showBoard(self):
         line = '    '
@@ -175,13 +194,13 @@ class Game:
             s = changeBase(str(x +1), '0123456789', 'zabcdefghijklmnopqrstuvwxy')
             line += ' ' *(2 -len(s))  +s
         print(line)
-        print('   #'  +'##' *self.sizeX)
+        print('   +'  +'--' *self.sizeX)
         visual = self.flags[:]
         if True in [False in [tile == ' ' for tile in line] for line in self.marks]:
             visual = self.marks[:]
             self.marks = [' ' *self.sizeX for y in range(self.sizeY)]
         for y in range(self.sizeY):
-            line = ' ' *(2 -len(str(y +1)))  +str(y +1)  +' #'
+            line = ' ' *(2 -len(str(y +1)))  +str(y +1)  +' |'
             for x in range(self.sizeX):
                 line += visual[y][x]
                 thing = self.board[y][x]
@@ -208,6 +227,43 @@ class Game:
         self.showBoard()
         self.showActionsRemaining()
     
+    def showUpgrades(self):
+        if not self.options:
+            print('no upgrades are currently available.')
+            return
+        raw = [[upgrade.short] +upgrade.message for upgrade in self.options]
+        height = max([len(lines) for lines in raw]) -1  #subtract 1 to exclude title from vertical padding calculation
+        boxes = []
+        for index in range(len(raw)):
+            message = raw[index]
+            title = ' ' +str(index +1) +': ' +message[0] +' '
+            width = max(len(title), max([len(line) for line in message[1:]]))
+            header = '-' *((width -len(title)) //2) +title
+            header += '-' *(width -len(header))
+            box = [header]
+            for y in range((height -len(message) +1) //2):
+                box.append(' ' *width)
+            for text in message[1:]:
+                line = ' ' *((width -len(text)) //2) +text
+                line += ' ' *(width -len(line))
+                box.append(line)
+            for y in range(height -len(box) +1):
+                box.append(' ' *width)
+            boxes.append(box)
+        line = '+-'
+        for box in boxes:
+            line += box[0] +'-+-'
+        print(line[:-1])
+        for y in range(height):
+            line = '| '
+            for box in boxes:
+                line += box[y +1] +' | '
+            print(line[:-1])
+        line = '+-'
+        for box in boxes:
+            line += '-' *len(box[0]) +'-+-'
+        print(line[:-1])
+
     def replace(self, x, y, value, allowed: tuple) -> bool:
         if self.board[y][x] in allowed:
             del self.board[y][x]
@@ -239,12 +295,34 @@ class Game:
                 print('lives remaining: ' +str(self.lives))
                 self.marks[y] = self.marks[y][:x] +'>' +self.marks[y][x +1:]
 
+    def addContent(self):
+        if self.round %3 == 2:
+            self.addPack()
+        #TODO add different content on other modulos of 3
+
+    def addPack(self):
+        total = 0
+        for pack in self.packs:
+            total += pack['weight'] *(1 -pack['avoid'])
+        index = random.random() *total
+        choice = self.packs[-1]
+        for pack in self.packs:
+            index -= pack['weight'] *(1 -pack['avoid'])
+            if index <= 0:
+                choice = pack
+                break
+        for thing in pack['content']:
+            self.deck.append(thing(self))
+        for pack in self.packs:
+            pack['avoid'] *= .5
+        choice['avoid'] = 1
+
     def nextRound(self):
         #TODO maybe check if has actions or options remaining
         self.distanceCache = {}
         self.resolveBuildings()
         self.round += 1
-        #TODO add new random events
+        self.addContent()
         self.triggerEvents()
         self.showAll()
         #TODO choice of new acions in deck or single use actions.
@@ -275,23 +353,8 @@ class Game:
             self.marks[y] = self.marks[y][:x] +'>' +self.marks[y][x +1:]
             self.showBoard()
             return
-        if inp[0] in ('point', 'coord') or not error:  #point at coord verbose
-            if len(inp) < 2:
-                print('enter coordinate you want to point at.')
-                return
-            x, y, success = decodeCoords(inp[1])
-            if not success:
-                return
-            x -= 1  #offset cuz board pos 0,0 is labled as 1,1
-            y -= 1
-            if not(0 <= x < self.sizeX and 0 <= y < self.sizeY):
-                print('coordinates are outside of board.')
-                return
-            self.marks[y] = '-' *self.sizeX
-            for row in range(self.sizeY):
-                self.marks[row] = self.marks[row][:x] +'|' +self.marks[row][x +1:]
-            self.marks[y] = self.marks[y][:x] +'>' +self.marks[y][x +1:]
-            self.showBoard()
+        if inp[0] in ('options', 'upgrades'):
+            self.showUpgrades()
             return
         if inp[0] in ('f', 'flag', 'm', 'mark'):
             if len(inp) < 2:
@@ -305,7 +368,7 @@ class Game:
                 return
             x -= 1  #offset cuz board pos 0,0 is labled as 1,1
             y -= 1
-            if not(0 <= x < self.sizeqX and 0 <= y < self.sizeY):
+            if not(0 <= x < self.sizeX and 0 <= y < self.sizeY):
                 print('coordinates are outside of board.')
                 return
             if len(inp) > 2:
@@ -527,6 +590,34 @@ class CornerResource(Building):
         super().__init__(game, posX, posY)
         self.short = 'C'
 
+class MansionHouse(Building):
+    def __init__(self, game, posX, posY):
+        super().__init__(game, posX, posY)
+        self.short = 'm'
+    
+    def calculateSight(self, atX, atY):
+        sight = 0
+        for vec in ((0, 1), (1, 0), (0, -1), (-1, 0)):
+            dist = 0
+            while True:
+                dist += 1
+                x = atX +vec[0] *dist
+                y = atY +vec[1] *dist
+                if not(0 <= x < self.game.sizeX and 0 <= y < self.game.sizeY):
+                    break
+                if not self.game.board[y][x]:
+                    continue
+                if self.game.board[y][x].blocksPath:
+                    break
+            sight += dist -1
+        return sight
+    
+    def generateDistanceBoard(self):
+        return [[min(max(self.calculateSight(x, y), 0), 9) for x in range(self.game.sizeX)] for y in range(self.game.sizeY)]
+
+    def checkSatisfaction(self) -> int:
+        return self.calculateSight(self.posX, self.posY) -8
+
 
 
 class Playable:
@@ -596,6 +687,33 @@ class CornerAction(Playable):
         super().__init__(game)
         self.placeResult = CornerResource
         self.short = 'C'
+
+class MansionEvent(Playable):
+    def __init__(self, game):
+        super().__init__(game)
+        self.placeResult = MansionHouse
+        self.short = 'm'
+        self.automatic = True
+
+
+
+class Option:
+    def __init__(self, game):
+        self.game = game
+        self.short = 'base class'
+        self.message = ['parent default Option', 'this should never appear']
+
+class StreetOption(Option):
+    def __init__(self, game):
+        super().__init__(game)
+        self.short = 'Street'
+        self.message = ['adds one _', 'to your deck.']
+
+class GroceriesOption(Option):
+    def __init__(self, game):
+        super().__init__(game)
+        self.short = 'temporary'
+        self.message = ['this message', 'is temporary.', 'this is for testing', 'the code for showing', 'very very very long messages.']
 
 
 
